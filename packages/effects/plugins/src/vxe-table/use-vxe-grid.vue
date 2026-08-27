@@ -205,14 +205,17 @@ const toolbarOptions = computed(() => {
 const options = computed(() => {
   const globalGridConfig = VxeUI?.getConfig()?.grid ?? {};
 
-  const mergedOptions: VxeTableGridProps = cloneDeep(
-    mergeWithArrayOverride(
-      {},
-      toRaw(toolbarOptions.value),
-      toRaw(gridOptions.value),
-      globalGridConfig,
-    ),
+  const rawMergedOptions: VxeTableGridProps = mergeWithArrayOverride(
+    {},
+    toRaw(toolbarOptions.value),
+    toRaw(gridOptions.value),
+    globalGridConfig,
   );
+  const mergedOptions: VxeTableGridProps = cloneDeep(rawMergedOptions);
+
+  // VXE 会在 columns 引用变化时重新加载列；保持来源数组的引用稳定，避免
+  // 响应式配置更新时清空排序、筛选等内部列状态。
+  mergedOptions.columns = rawMergedOptions.columns;
 
   if (mergedOptions.proxyConfig) {
     const { ajax } = mergedOptions.proxyConfig;
@@ -331,17 +334,6 @@ async function init() {
     toRaw(gridOptions.value),
     toRaw(globalGridConfig),
   );
-  // 内部主动加载数据，防止form的默认值影响
-  const autoLoad = defaultGridOptions.proxyConfig?.autoLoad;
-  const enableProxyConfig = options.value.proxyConfig?.enabled;
-  if (enableProxyConfig && autoLoad) {
-    props.api.grid.commitProxy?.(
-      'query',
-      formOptions.value ? ((await formApi.getValues()) ?? {}) : {},
-    );
-    // props.api.reload(formApi.form?.values ?? {});
-  }
-
   // form 由 vben-form代替，所以不适配formConfig，这里给出警告
   const formConfig = gridOptions.value?.formConfig;
   // 处理某个页面加载多个Table时，第2个之后的Table初始化报出警告
@@ -356,6 +348,20 @@ async function init() {
   extendProxyOptions(props.api, defaultGridOptions, () =>
     formApi.getLatestSubmissionValues(),
   );
+
+  // 状态写回会触发 VXE 重新加载 columns，需等待列稳定后再应用 defaultSort。
+  await nextTick();
+
+  // 内部主动加载数据，防止 form 的默认值影响
+  const autoLoad = defaultGridOptions.proxyConfig?.autoLoad;
+  const enableProxyConfig = options.value.proxyConfig?.enabled;
+  if (enableProxyConfig && autoLoad) {
+    props.api.grid.commitProxy?.(
+      // initial 会应用 defaultSort，并将排序状态传给首次代理查询
+      'initial',
+      formOptions.value ? ((await formApi.getValues()) ?? {}) : {},
+    );
+  }
 }
 
 // formOptions支持响应式
